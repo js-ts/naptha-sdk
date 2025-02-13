@@ -131,7 +131,7 @@ async def list_modules(naptha, module_type=None, module_name=None):
         "Author": {"justify": "left"},
         "Description": {"justify": "left", "max_width": 50},
         "Parameters": {"justify": "left", "max_width": 40},
-        "Module URL": {"justify": "left", "max_width": 40},
+        "Module URL": {"justify": "left", "no_wrap": True},  # Removed max_width to show full URL
         "Module Version": {"justify": "left"},
         "Module Type": {"justify": "left"},
         "Module Entrypoint": {"justify": "left"}
@@ -143,13 +143,16 @@ async def list_modules(naptha, module_type=None, module_name=None):
 
     # Add rows
     for module in modules:
+        # Make URL clickable with link styling
+        url = f"[link={module['module_url']}]{module['module_url']}[/link]"
+        
         table.add_row(
             module['name'],
             module['id'],
             module['author'],
             module['description'],
             str(module['parameters']),
-            module['module_url'],
+            url,  # Using formatted URL with link
             module['module_version'],
             module.get('module_type', ''),
             module.get('module_entrypoint', '')
@@ -518,6 +521,7 @@ async def storage_interaction(
                         options=json.loads(options) if options else {}
                     )
                     result = await storage_provider.execute(request)
+                    print(f"Create {storage_type} result: {result}")
                     return result
             elif operation == "read":
                 request = ReadStorageRequest(
@@ -526,7 +530,7 @@ async def storage_interaction(
                     options=json.loads(options) if options else {}
                 )
                 result = await storage_provider.execute(request)
-                
+                print(f"Read {storage_type} result: {result}")
                 # Handle downloaded file
                 if isinstance(result.data, bytes):
                     output_dir = "./downloads"
@@ -592,7 +596,7 @@ async def storage_interaction(
                 )
 
         result = await storage_provider.execute(request)
-        print(result)
+        print(f"{operation} {storage_type} result: {result}")
         return result
 
     except Exception as e:
