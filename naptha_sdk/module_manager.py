@@ -23,9 +23,7 @@ AGENT_DIR = "naptha_modules"
 
 # Certain packages cause issues with dependencies and can be slow to resolve, better to specify ranges
 PACKAGE_VERSIONS = {
-    "crewai": "^0.41.1",
-    "crewai_tools": ">=0.4.6,<0.5.0",
-    "embedchain": ">=0.1.113,<0.2.0",
+    "camel-ai": "^0.2.20"
 }
 
 def copy_env_file(source_dir, package_name):
@@ -110,18 +108,29 @@ def add_dependencies_to_pyproject(package_name, packages):
     # Add/update Python version requirement
     dependencies["python"] = ">=3.10,<3.13"
 
-    # # Add naptha-sdk dependency
+    # use a local path for naptha-sdk
     dependencies["naptha-sdk"] = {
-        "git": "https://github.com/napthaAI/naptha-sdk.git",
-        "branch": "main"
+        "path": "/Users/vedantpadwal/Naptha/camel-ai/naptha-sdk",
+        "develop": True
     }
+
     # Add other dependencies
     for package in packages:
         curr_package = package['module'].split('.')[0]
+        if curr_package == "camel":
+            curr_package = "camel-ai"
         if curr_package not in dependencies and not is_std_lib(curr_package):
             dependencies[curr_package] = PACKAGE_VERSIONS.get(curr_package, "*")
 
     dependencies["python-dotenv"] = "*"
+
+    # Pinned versions
+    dependencies["Pillow"] = "^11.1.0"
+    dependencies["scikit-learn"] = "^1.6.1"
+    dependencies["requests-oauthlib"] = "^2.0.0"
+    dependencies["pandas"] = "^2.2.3"
+    dependencies["googlemaps"] = "^4.10.0"
+    dependencies["duckduckgo-search"] = "^7.3.2"
 
     # Write updated TOML back to file
     with open(f"{AGENT_DIR}/{package_name}/pyproject.toml", 'w', encoding='utf-8') as file:
@@ -159,7 +168,7 @@ def parse_deployment_file(deployment_file: str):
 
             results.append({
                 "module_type": module_type,
-                "function":module_run_func_dict[module_type],
+                "function": module_run_func_dict[module_type],
                 "deployment_path": deployment_file,
                 "node_url": node_url,
                 "user_id": user_id,
@@ -198,31 +207,21 @@ def render_agent_code(
     union_modules,
     params
 ):
-    import os
-    import textwrap
-
     content = ''
-    print(f'CWD { os.path.abspath("./")}')
-    config_values=get_config_values(os.path.abspath("./"))
+    config_values = get_config_values(os.path.abspath("./"))
 
     # Standard imports
     for module in standard_import_modules:
-        line = f'import {module["name"]}\n'
-        content += line
+        content += f'import {module["name"]}\n'
 
     # Selective imports
     for module in selective_import_modules:
-        line = f'from {module["module"]} import {module["name"]}\n'
-        content += line
+        content += f'from {module["module"]} import {module["name"]}\n'
 
     # Variable modules
     for module in variable_modules:
         if module["module"] and module["import_needed"]:
             content += f'from {module["module"]} import {module["name"]}\n'
-
-    # If any selective import includes 'crewai'
-    if any('crewai' in module['module'] for module in selective_import_modules):
-        content += "from crewai import Task\n"
 
     # Union modules
     for module in union_modules:
@@ -242,79 +241,57 @@ def render_agent_code(
 
     """)
 
-    # Add source from selective_import_modules (if any 'source' key exists)
-    for module in selective_import_modules:
-        if 'source' in module and module['source']:
-            content += module['source'] + "\n"
+    # -- IMPORTANT FIX HERE --
+    # Remove the five unwanted lines if they appear at top-level in any module source.
+    # We do that by a simple regex filter.
+    def remove_unneeded_lines(src: str) -> str:
+        # This pattern removes lines beginning with:
+        # agent = ChatAgent(...)
+        # search_toolkit = SearchToolkit(...)
+        # researcher_agent = ChatAgent(...)
+        # workforce = Workforce(...)
+        # task = Task(...)
+        pattern = r'^(agent\s*=\s*ChatAgent.*|search_toolkit\s*=\s*SearchToolkit.*|researcher_agent\s*=\s*ChatAgent.*|workforce\s*=\s*Workforce.*|task\s*=\s*Task.*)\n'
+        return re.sub(pattern, '', src, flags=re.MULTILINE)
 
-    # Local modules source
-
-    for module in local_modules:
-        content += module['source'] + "\n"
-
-    # Variable modules source
-    for module in variable_modules:
-        content += module['source'] + "\n"
-
-    # Adjust the agent_code text (remove 'self.')
-
-    agent_code = agent_code.replace('self.', '')
-    agent_code = agent_code.replace('self', '')
+    # Add source from selective_import_modules, local_modules, and variable_modules
+    for module in selective_import_modules + local_modules + variable_modules:
+        if 'source' in module:
+            filtered_source = remove_unneeded_lines(module['source'])
+            content += filtered_source + "\n"
 
     # Include the agent_code
     content += textwrap.dedent(agent_code) + "\n\n"
 
     # Final run function and main block
-    # This block reflects your manually edited run.py logic
     final_block = textwrap.dedent(f"""\
     def run(module_run: Dict, *args, **kwargs):
         \"\"\"
         Modified run function that creates and executes the agent.
-        If 'func_name' is 'agent_name', we build the agent and run it
-        with the 'description' provided in func_input_data.
+        If 'func_name' is '{obj_name}', return the result from the agent function.
         \"\"\"
-        # Parse the input schema
-        module_run = AgentRunInput(**module_run)
-        module_run.inputs = InputSchema(**module_run.inputs)
-
-        # Check which function we want to call
-        func_to_call = globals().get(module_run.inputs.func_name)
+        agent_run_input = AgentRunInput(**module_run)
+        inputs_obj = InputSchema(**agent_run_input.inputs)
+        func_to_call = globals().get(inputs_obj.func_name)
         if not func_to_call:
-            raise ValueError(f"Function '{{module_run.inputs.func_name}}' not found.")
-
-        # If func_name requests 'agent_name', create and run the agent
-        if module_run.inputs.func_name == "{obj_name}":
-            the_agent = {obj_name}()
-            user_question = module_run.inputs.func_input_data.get("description", "")
-            expected_output = module_run.inputs.func_input_data.get("expected_output", "Analysis results")
-            if not user_question:
-                return {{"error": "No question provided in func_input_data['description']."}}
-
-            # Create a task for the agent with expected_output
-            task = Task(
-                description=user_question,
-                expected_output=expected_output,
-                agent=the_agent,
-                human_input=False
-            )
-
-            # Execute the task
-            return the_agent.execute_task(task)
-
+            raise ValueError(f"Function '{{inputs_obj.func_name}}' not found.")
+        if inputs_obj.func_name == "{obj_name}":
+            return {obj_name}()
         else:
-            # Fallback: if there's no direct match or we want to run other functions
             import inspect
             sig = inspect.signature(func_to_call)
             if len(sig.parameters) == 0:
                 return func_to_call()
             else:
+
                 tool_input_class = (
-                    globals().get(module_run.inputs.input_type)
-                    if module_run.inputs.input_type else None
+                    globals().get(inputs_obj.input_type)
+                    if inputs_obj.input_type else None
                 )
+
                 input_data = (
-                    tool_input_class(**module_run.inputs.func_input_data)
-                    if tool_input_class else module_run.inputs.func_input_data
+                    tool_input_class(**inputs_obj.func_input_data)
+                    if tool_input_class else inputs_obj.func_input_data
                 )
                 return func_to_call(input_data)
 
@@ -335,30 +312,25 @@ def render_agent_code(
                 is_subdeployment=False
             )
         )
-
         example_inputs = {{
-            "description": "What is the market cap of AMZN?",
-            "expected_output": "The market cap of AMZN"
+            "description": "Evaluate the CAMEL-Powered Adaptive Learning Assistant project",
+            "expected_output": "A comprehensive evaluation of the project, including scores and feedback from multiple judges"
         }}
-
         input_params = {{
             "func_name": "{obj_name}",
             "func_input_data": example_inputs
         }}
-
         module_run = {{
             "inputs": input_params,
             "deployment": deployment,
             "consumer_id": naptha.user.id,
             "signature": sign_consumer_id(naptha.user.id, os.getenv("PRIVATE_KEY"))
         }}
-
         response = run(module_run)
         print(response)
     """)
 
     content += final_block
-
     return content
 
 def generate_schema(agent_name, params):
@@ -515,35 +487,18 @@ profile_default/
 ipython_config.py
 
 # pyenv
-#   For a library or package, you might want to ignore these files since the code is
-#   intended to run in multiple environments; otherwise, check them in:
 # .python-version
 
 # pipenv
-#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
-#   However, in case of collaboration, if having platform-specific dependencies or dependencies
-#   having no cross-platform support, pipenv may install dependencies that don't work, or not
-#   install all needed dependencies.
 #Pipfile.lock
 
 # poetry
-#   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
 #poetry.lock
 
 # pdm
-#   Similar to Pipfile.lock, it is generally recommended to include pdm.lock in version control.
-#pdm.lock
-#   pdm stores project-wide configurations in .pdm.toml, but it is recommended to not include it
-#   in version control.
-#   https://pdm.fming.dev/latest/usage/project/#working-with-version-control
-.pdm.toml
-.pdm-python
-.pdm-build/
-
-# PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
-__pypackages__/
+#.pdm.toml
+#.pdm-python
+#.pdm-build/
 
 # Celery stuff
 celerybeat-schedule
@@ -584,13 +539,6 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
-
-# PyCharm
-#  JetBrains specific template is maintained in a separate JetBrains.gitignore that can be
-#  found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
-#  and can be added to the global gitignore or merged into this file.  For a more nuclear
-#  option (not recommended) you can uncomment the following to ignore the entire idea folder.
-#.idea/
 '''
     with open(gitignore_path, 'w') as gitignore_file:
         gitignore_file.write(gitignore_content)
@@ -729,10 +677,7 @@ async def load_persona(persona_module):
             logger.error(f"Unsupported file type {persona_file.suffix} in {repo_name}")
             return None
 
-
-    # input_schema = load_input_schema(repo_name)
     return persona_data
-
 
 def read_gitignore(directory):
     gitignore_path = os.path.join(directory, '.gitignore')
