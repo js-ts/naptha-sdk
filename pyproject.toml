@@ -30,3 +30,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.scripts]
 naptha = "naptha_sdk.cli:cli"
+
+[tool.poetry.plugins."naptha_sdk.plugins"]
+"langchain" = "naptha_sdk.plugins.frameworks.langchain.plugin:LangChainPlugin"
+"crewai" = "naptha_sdk.plugins.frameworks.crewai.plugin:CrewAIPlugin"
